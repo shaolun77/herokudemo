@@ -1,99 +1,181 @@
-from flask import Flask, request, render_template, redirect, jsonify, session
-# import requests
-# from flask_debugtoolbar import DebugToolbar
+"""Feedback Flask app."""
 
-from forex_python.converter import CurrencyRates
-from convert import Survey
+from flask import Flask, render_template, redirect, session
+from flask_debugtoolbar import DebugToolbarExtension
+from werkzeug.exceptions import Unauthorized
+
+from models import connect_db, db, User, Feedback
+from forms import RegisterForm, LoginForm, FeedbackForm, DeleteForm
+
 app = Flask(__name__)
 
-app.config['SECRET_KEY'] = "abc123"
+app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql:///flask-feedback"
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ECHO'] = True
+app.config['SECRET_KEY'] = "shhhhh"
 app.config['DEBUG_TB_INTERCEPT_REDIRECTS'] = False
 
-# survey = Survey()
-result=["Give me something to convert!"]
+toolbar = DebugToolbarExtension(app)
 
-@app.route("/", methods = ['GET', 'POST'])
-def home_page():
-    """ Shows the form
-    #should have inputs for two different currencies
-    #should have an input for the amount as well. accepts integer(?)
-    """
-    return render_template('index.html')
+connect_db(app)
 
 
-@app.route("/conversion", methods = ['GET', 'POST'])
-def show_conversion():
-    """shows the users conversion"""
-    return render_template('convSubmit.html', result=result)
+@app.route("/")
+def homepage():
+    """Homepage of site; redirect to register."""
+
+    return redirect("/register")
 
 
-@app.route("/conversion/new", methods=["POST"])
-def add_conversion():
-    """clear old conversion from list and add new"""
-    result=[]
-    survey = Survey(request.form["convertFrom"], request.form["convertTo"], request.form["value"])
-    result.append(survey.convertCurrency())
-    return redirect("/conversion")
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    """Register a user: produce form and handle form submission."""
+
+    if "username" in session:
+        return redirect(f"/users/{session['username']}")
+
+    form = RegisterForm()
+
+    if form.validate_on_submit():
+        username = form.username.data
+        password = form.password.data
+        first_name = form.first_name.data
+        last_name = form.last_name.data
+        email = form.email.data
+
+        user = User.register(username, password, first_name, last_name, email)
+
+        db.session.commit()
+        session['username'] = user.username
+
+        return redirect(f"/users/{user.username}")
+
+    else:
+        return render_template("users/register.html", form=form)
 
 
-    
-    
-# responses_key= "responses"
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Produce login form or handle login."""
 
-# T= CurrencyRates()
+    if "username" in session:
+        return redirect(f"/users/{session['username']}")
 
-# @app.route("/Index2", methods=["POST"])
-# def save_answer():
-#     line2 = request.data.get("C1", "C2", int("amt"))
-#     responses = session[responses_key]  
-#     responses.append(line2)
-#     responses = session[responses]
+    form = LoginForm()
 
-#     rate = T.convert(line2[0],line2[1],int(line2[2]))
-#     return rate,render_template("/Index2.html", rate="response") 
-    
-# @app.route('/results', methods=['POST'])
-# def process():
-#     conv_from = request.form['conv_from']
-#     conv_to = request.form['conv_to']
-#     amount = float(request.form['amount'])
-    
-#     rates = CurrencyRates()
-#     codes = CurrencyCodes()
-    
-#     try:
-#         results = round(rates.convert(conv_from, conv_to, amount), 2)
-#         symbol = codes.get_symbol(conv_to)
-#         return render_template("/results.html", conv_from=conv_from, conv_to=conv_to, amount=amount, results=results, symbol=symbol)
-#     except RatesNotAvailableError:
-#         flash("Please enter a valid currency")
-#         return redirect('/')
-#     except (ValueError, TypeError):
-#         flash("Oops something went wrong")
-#         return redirect('/')
-    
-#     #or:
-    
-    
-# @app.route('/results', methods=['POST'])
-# def process():
-#     conv_from = request.form['conv_from']
-#     conv_to = request.form['conv_to']
-    
-#     rates = CurrencyRates()
-#     codes = CurrencyCodes()
-    
-#     try:
-#         amount = float(request.form['amount'])
-#         results = round(rates.convert(conv_from, conv_to, amount), 2)
-#         symbol = codes.get_symbol(conv_to)
-#         return render_template("/results.html", conv_from=conv_from, conv_to=conv_to, amount=amount, results=results, symbol=symbol)
-#     except RatesNotAvailableError:
-#         flash("Please enter a valid currency")
-#         return redirect('/')
-#     except ValueError:
-#         flash("Invalid amount provided!")
-#         return redirect('/')
-#     except TypeError:
-#         flash("Oops something went wrong")
-#         return redirect('/')
+    if form.validate_on_submit():
+        username = form.username.data
+        password = form.password.data
+
+        user = User.authenticate(username, password)  # <User> or False
+        if user:
+            session['username'] = user.username
+            return redirect(f"/users/{user.username}")
+        else:
+            form.username.errors = ["Invalid username/password."]
+            return render_template("users/login.html", form=form)
+
+    return render_template("users/login.html", form=form)
+
+
+@app.route("/logout")
+def logout():
+    """Logout route."""
+
+    session.pop("username")
+    return redirect("/login")
+
+
+@app.route("/users/<username>")
+def show_user(username):
+    """Example page for logged-in-users."""
+
+    if "username" not in session or username != session['username']:
+        raise Unauthorized()
+
+    user = User.query.get(username)
+    form = DeleteForm()
+
+    return render_template("users/show.html", user=user, form=form)
+
+
+@app.route("/users/<username>/delete", methods=["POST"])
+def remove_user(username):
+    """Remove user nad redirect to login."""
+
+    if "username" not in session or username != session['username']:
+        raise Unauthorized()
+
+    user = User.query.get(username)
+    db.session.delete(user)
+    db.session.commit()
+    session.pop("username")
+
+    return redirect("/login")
+
+
+@app.route("/users/<username>/feedback/new", methods=["GET", "POST"])
+def new_feedback(username):
+    """Show add-feedback form and process it."""
+
+    if "username" not in session or username != session['username']:
+        raise Unauthorized()
+
+    form = FeedbackForm()
+
+    if form.validate_on_submit():
+        title = form.title.data
+        content = form.content.data
+
+        feedback = Feedback(
+            title=title,
+            content=content,
+            username=username,
+        )
+
+        db.session.add(feedback)
+        db.session.commit()
+
+        return redirect(f"/users/{feedback.username}")
+
+    else:
+        return render_template("feedback/new.html", form=form)
+
+
+@app.route("/feedback/<int:feedback_id>/update", methods=["GET", "POST"])
+def update_feedback(feedback_id):
+    """Show update-feedback form and process it."""
+
+    feedback = Feedback.query.get(feedback_id)
+
+    if "username" not in session or feedback.username != session['username']:
+        raise Unauthorized()
+
+    form = FeedbackForm(obj=feedback)
+
+    if form.validate_on_submit():
+        feedback.title = form.title.data
+        feedback.content = form.content.data
+
+        db.session.commit()
+
+        return redirect(f"/users/{feedback.username}")
+
+    return render_template("/feedback/edit.html", form=form, feedback=feedback)
+
+
+@app.route("/feedback/<int:feedback_id>/delete", methods=["POST"])
+def delete_feedback(feedback_id):
+    """Delete feedback."""
+
+    feedback = Feedback.query.get(feedback_id)
+    if "username" not in session or feedback.username != session['username']:
+        raise Unauthorized()
+
+    form = DeleteForm()
+
+    if form.validate_on_submit():
+        db.session.delete(feedback)
+        db.session.commit()
+
+    return redirect(f"/users/{feedback.username}")
